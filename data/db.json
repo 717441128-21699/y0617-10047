@@ -17,5 +17,21 @@
       "updatedAt": "2026-06-16T20:32:33.748Z"
     }
   ],
-  "responses": []
+  "responses": [],
+  "savedViews": [
+    {
+      "id": "view_mqh5krwp_aqdvtl",
+      "surveyId": "survey_mqh3m9qs_sodn7x",
+      "name": "Test",
+      "tab": "trend",
+      "segmentId": null,
+      "trendGranularity": "day",
+      "trendDays": 7,
+      "groupQuestionId": null,
+      "targetQuestionId": null,
+      "createdAt": "2026-06-16T21:27:23.209Z",
+      "updatedAt": "2026-06-16T21:27:23.209Z"
+    }
+  ],
+  "segments": []
 }

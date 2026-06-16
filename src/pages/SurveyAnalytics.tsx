@@ -15,6 +15,13 @@ import {
   BarChart2,
   LineChart,
   Clock,
+  Save,
+  Copy,
+  Trash2,
+  X,
+  Filter,
+  Eye,
+  Layers,
 } from 'lucide-react';
 import {
   BarChart,
@@ -40,6 +47,8 @@ import type {
   TrendGranularity,
   TrendResult,
   CrossTabResult,
+  Segment,
+  SavedAnalysisView,
 } from '../../shared/types.js';
 import { QUESTION_TYPE_LABELS } from '../lib/surveyUtils.js';
 
@@ -47,6 +56,8 @@ const COLORS = ['#4f46e5', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'
 const POLL_INTERVAL = 5000;
 
 type Tab = 'overview' | 'trend' | 'crosstab';
+
+const ALL_SEGMENT_ID = '__all__';
 
 export default function SurveyAnalyticsPage() {
   const { id } = useParams<{ id: string }>();
@@ -68,15 +79,46 @@ export default function SurveyAnalyticsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const prevTotalRef = useRef<number>(-1);
 
+  const [segments, setSegments] = useState<Segment[]>([]);
+  const [selectedSegmentId, setSelectedSegmentId] = useState<string>(ALL_SEGMENT_ID);
+
+  const [savedViews, setSavedViews] = useState<SavedAnalysisView[]>([]);
+  const [selectedViewId, setSelectedViewId] = useState<string>('');
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [saveViewName, setSaveViewName] = useState('');
+  const [showSegmentDropdown, setShowSegmentDropdown] = useState(false);
+  const [showViewDropdown, setShowViewDropdown] = useState(false);
+  const [viewActionLoading, setViewActionLoading] = useState<string | null>(null);
+
   useEffect(() => {
     if (id) fetchSurvey(id);
   }, [id, fetchSurvey]);
+
+  useEffect(() => {
+    if (!id) return;
+    (async () => {
+      try {
+        const [segs, views] = await Promise.all([
+          surveyApi.listSegments(id),
+          surveyApi.listSavedViews(id),
+        ]);
+        setSegments(segs);
+        setSavedViews(views);
+      } catch {
+        /* ignore */
+      }
+    })();
+  }, [id]);
+
+  const currentFilter = {
+    segmentId: selectedSegmentId === ALL_SEGMENT_ID ? undefined : selectedSegmentId,
+  };
 
   async function loadAll(silent = false) {
     if (!id) return;
     if (!silent) setRefreshing(true);
     try {
-      const result = await surveyApi.getAnalytics(id);
+      const result = await surveyApi.getAnalytics(id, currentFilter);
       if (prevTotalRef.current >= 0 && result.totalResponses !== prevTotalRef.current) {
         setLastUpdated(new Date());
       }
@@ -94,7 +136,7 @@ export default function SurveyAnalyticsPage() {
   async function loadTrend() {
     if (!id) return;
     try {
-      const t = await surveyApi.getTrend(id, trendGranularity, trendDays);
+      const t = await surveyApi.getTrend(id, trendGranularity, trendDays, currentFilter);
       setTrend(t);
     } catch {
       /* ignore */
@@ -104,7 +146,7 @@ export default function SurveyAnalyticsPage() {
   async function loadCrossTab() {
     if (!id || !groupQuestionId || !targetQuestionId) return;
     try {
-      const r = await surveyApi.getCrossTab(id, groupQuestionId, targetQuestionId);
+      const r = await surveyApi.getCrossTab(id, groupQuestionId, targetQuestionId, currentFilter);
       setCrossTab(r);
     } catch {
       setCrossTab(null);
@@ -116,18 +158,20 @@ export default function SurveyAnalyticsPage() {
     setLastUpdated(new Date());
     const t = setInterval(() => loadAll(true), POLL_INTERVAL);
     return () => clearInterval(t);
-  }, [id]);
+  }, [id, selectedSegmentId]);
 
   useEffect(() => {
     if (tab === 'trend') loadTrend();
-  }, [tab, id, trendGranularity, trendDays]);
+  }, [tab, id, trendGranularity, trendDays, selectedSegmentId]);
 
   useEffect(() => {
     if (tab === 'crosstab' && currentSurvey && !groupQuestionId) {
       const firstGroup = currentSurvey.questions.find((q) => ['single', 'dropdown'].includes(q.type));
       if (firstGroup) {
         setGroupQuestionId(firstGroup.id);
-        const firstTarget = currentSurvey.questions.find((q) => q.id !== firstGroup.id);
+        const firstTarget = currentSurvey.questions.find(
+          (q) => q.id !== firstGroup.id && ['single', 'dropdown', 'multiple', 'rating'].includes(q.type)
+        );
         if (firstTarget) setTargetQuestionId(firstTarget.id);
       }
     }
@@ -137,7 +181,67 @@ export default function SurveyAnalyticsPage() {
     if (tab === 'crosstab' && groupQuestionId && targetQuestionId) {
       loadCrossTab();
     }
-  }, [tab, id, groupQuestionId, targetQuestionId]);
+  }, [tab, id, groupQuestionId, targetQuestionId, selectedSegmentId]);
+
+  function applyView(view: SavedAnalysisView) {
+    setTab(view.tab);
+    setSelectedSegmentId(view.segmentId ?? ALL_SEGMENT_ID);
+    setTrendGranularity(view.trendGranularity);
+    setTrendDays(view.trendDays);
+    if (view.groupQuestionId) setGroupQuestionId(view.groupQuestionId);
+    if (view.targetQuestionId) setTargetQuestionId(view.targetQuestionId);
+  }
+
+  async function handleSaveView() {
+    if (!id || !saveViewName.trim()) return;
+    setViewActionLoading('save');
+    try {
+      const newView = await surveyApi.createSavedView(id, {
+        name: saveViewName.trim(),
+        tab,
+        segmentId: selectedSegmentId === ALL_SEGMENT_ID ? null : selectedSegmentId,
+        trendGranularity,
+        trendDays,
+        groupQuestionId: groupQuestionId || null,
+        targetQuestionId: targetQuestionId || null,
+      });
+      setSavedViews((prev) => [...prev, newView]);
+      setSelectedViewId(newView.id);
+      setShowSaveModal(false);
+      setSaveViewName('');
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '保存失败');
+    } finally {
+      setViewActionLoading(null);
+    }
+  }
+
+  async function handleCloneView(view: SavedAnalysisView) {
+    setViewActionLoading(`clone:${view.id}`);
+    try {
+      const cloned = await surveyApi.cloneSavedView(view.id, `${view.name} 副本`);
+      setSavedViews((prev) => [...prev, cloned]);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '复制失败');
+    } finally {
+      setViewActionLoading(null);
+    }
+  }
+
+  async function handleDeleteView(view: SavedAnalysisView, e: React.MouseEvent) {
+    e.stopPropagation();
+    if (!confirm(`确定删除视图「${view.name}」吗？`)) return;
+    setViewActionLoading(`delete:${view.id}`);
+    try {
+      await surveyApi.deleteSavedView(view.id);
+      setSavedViews((prev) => prev.filter((v) => v.id !== view.id));
+      if (selectedViewId === view.id) setSelectedViewId('');
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '删除失败');
+    } finally {
+      setViewActionLoading(null);
+    }
+  }
 
   if (loading) return <div className="container py-16 text-center text-slate-400">加载中...</div>;
   if (error) {
@@ -152,13 +256,16 @@ export default function SurveyAnalyticsPage() {
 
   const questions = currentSurvey?.questions ?? [];
   const groupableQuestions = questions.filter((q) => ['single', 'dropdown'].includes(q.type));
+  const targetableQuestions = questions.filter((q) => ['single', 'dropdown', 'multiple', 'rating'].includes(q.type));
   const avgSkipped = data.questions.length > 0
     ? data.questions.reduce((s, q) => s + q.skippedCount, 0) / data.questions.length
     : 0;
 
+  const currentSegment = segments.find((s) => s.id === selectedSegmentId);
+
   return (
     <div className="container py-8">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <div>
           <div className="flex items-center gap-3 mb-2">
             <h2 className="text-2xl font-serif font-semibold text-slate-800">统计分析</h2>
@@ -181,6 +288,132 @@ export default function SurveyAnalyticsPage() {
             <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
             {refreshing ? '刷新中...' : '刷新数据'}
           </button>
+        </div>
+      </div>
+
+      <div className="card p-4 mb-6 bg-gradient-to-br from-slate-50 to-white">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="text-xs font-medium text-slate-500 mb-2 flex items-center gap-1.5 uppercase tracking-wide">
+              <Layers className="w-3.5 h-3.5" />
+              分析人群包
+            </label>
+            <div className="relative">
+              <button
+                onClick={() => { setShowSegmentDropdown(!showSegmentDropdown); setShowViewDropdown(false); }}
+                className="w-full text-left px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 flex items-center justify-between hover:border-primary-300 transition-colors shadow-sm"
+              >
+                <span className="flex items-center gap-2">
+                  <Filter className="w-4 h-4 text-primary-600" />
+                  <span className="font-medium">
+                    {currentSegment ? currentSegment.name : '全部样本'}
+                  </span>
+                </span>
+                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showSegmentDropdown ? 'rotate-180' : ''}`} />
+              </button>
+              {showSegmentDropdown && (
+                <div className="absolute z-30 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-72 overflow-y-auto">
+                  <button
+                    onClick={() => { setSelectedSegmentId(ALL_SEGMENT_ID); setShowSegmentDropdown(false); }}
+                    className={`w-full text-left px-4 py-2.5 text-sm hover:bg-primary-50 border-b border-slate-100 ${
+                      selectedSegmentId === ALL_SEGMENT_ID ? 'bg-primary-50 text-primary-700 font-medium' : 'text-slate-700'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <Users className="w-4 h-4" />
+                      全部样本
+                    </span>
+                  </button>
+                  {segments.map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => { setSelectedSegmentId(s.id); setShowSegmentDropdown(false); }}
+                      className={`w-full text-left px-4 py-2.5 text-sm hover:bg-primary-50 ${
+                        s.id === selectedSegmentId ? 'bg-primary-50 text-primary-700 font-medium' : 'text-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span>{s.name}</span>
+                      </div>
+                      {s.description && <div className="text-xs text-slate-400 mt-0.5 ml-6">{s.description}</div>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-500 mb-2 flex items-center gap-1.5 uppercase tracking-wide">
+              <Eye className="w-3.5 h-3.5" />
+              已保存视图
+            </label>
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <button
+                  onClick={() => { setShowViewDropdown(!showViewDropdown); setShowSegmentDropdown(false); }}
+                  className="w-full text-left px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 flex items-center justify-between hover:border-primary-300 transition-colors shadow-sm"
+                >
+                  <span className="font-medium">
+                    {selectedViewId ? savedViews.find((v) => v.id === selectedViewId)?.name : '选择视图...'}
+                  </span>
+                  <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showViewDropdown ? 'rotate-180' : ''}`} />
+                </button>
+                {showViewDropdown && (
+                  <div className="absolute z-30 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-80 overflow-y-auto">
+                    {savedViews.length === 0 ? (
+                      <div className="px-4 py-6 text-center text-sm text-slate-400">
+                        暂无已保存视图
+                      </div>
+                    ) : (
+                      savedViews.map((v) => (
+                        <div
+                          key={v.id}
+                          className={`group flex items-center gap-2 px-3 py-2.5 text-sm hover:bg-primary-50 cursor-pointer ${
+                            v.id === selectedViewId ? 'bg-primary-50 text-primary-700 font-medium' : 'text-slate-700'
+                          }`}
+                          onClick={() => { setSelectedViewId(v.id); applyView(v); setShowViewDropdown(false); }}
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="truncate">{v.name}</div>
+                            <div className="text-xs text-slate-400 font-normal mt-0.5">
+                              {v.tab === 'overview' ? '总览' : v.tab === 'trend' ? '趋势' : '交叉'}
+                              {v.segmentId && ' · 人群过滤'}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleCloneView(v); }}
+                              disabled={viewActionLoading === `clone:${v.id}`}
+                              className="p-1.5 rounded-lg hover:bg-white text-slate-500 hover:text-primary-600 transition-colors disabled:opacity-50"
+                              title="复制视图"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={(e) => handleDeleteView(v, e)}
+                              disabled={viewActionLoading === `delete:${v.id}`}
+                              className="p-1.5 rounded-lg hover:bg-white text-slate-500 hover:text-red-600 transition-colors disabled:opacity-50"
+                              title="删除视图"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={() => { setSaveViewName(''); setShowSaveModal(true); }}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-medium bg-gradient-to-br from-primary-500 to-primary-700 text-white hover:from-primary-600 hover:to-primary-800 transition-all shadow-soft disabled:opacity-60 whitespace-nowrap"
+              >
+                <Save className="w-4 h-4" />
+                保存当前视图
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -241,13 +474,68 @@ export default function SurveyAnalyticsPage() {
         <CrossTabPanel
           surveyId={id ?? ''}
           groupableQuestions={groupableQuestions}
+          targetableQuestions={targetableQuestions}
           allQuestions={questions}
           groupQuestionId={groupQuestionId}
           targetQuestionId={targetQuestionId}
           onGroupChange={setGroupQuestionId}
           onTargetChange={setTargetQuestionId}
           crossTab={crossTab}
+          segmentId={selectedSegmentId === ALL_SEGMENT_ID ? undefined : selectedSegmentId}
         />
+      )}
+
+      {showSaveModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm animate-fade-in" onClick={() => setShowSaveModal(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 animate-slide-up" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+              <h3 className="font-serif font-semibold text-lg text-slate-800">保存分析视图</h3>
+              <button
+                onClick={() => setShowSaveModal(false)}
+                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="px-6 py-5">
+              <label className="text-sm font-medium text-slate-600 mb-2 block">视图名称</label>
+              <input
+                type="text"
+                value={saveViewName}
+                onChange={(e) => setSaveViewName(e.target.value)}
+                placeholder="例如：周度满意度趋势"
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400"
+                onKeyDown={(e) => e.key === 'Enter' && handleSaveView()}
+                autoFocus
+              />
+              <div className="mt-4 p-3 rounded-xl bg-slate-50 space-y-1.5 text-xs text-slate-500">
+                <div className="flex items-center justify-between">
+                  <span>分析标签页</span>
+                  <span className="font-medium text-slate-700">{tab === 'overview' ? '总览分布' : tab === 'trend' ? '时间趋势' : '交叉分析'}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>人群包</span>
+                  <span className="font-medium text-slate-700">{currentSegment ? currentSegment.name : '全部样本'}</span>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-slate-100 bg-slate-50/50 rounded-b-2xl">
+              <button
+                onClick={() => setShowSaveModal(false)}
+                className="px-4 py-2 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-100 transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleSaveView}
+                disabled={!saveViewName.trim() || viewActionLoading === 'save'}
+                className="px-5 py-2 rounded-xl text-sm font-medium bg-gradient-to-br from-primary-500 to-primary-700 text-white hover:from-primary-600 hover:to-primary-800 transition-all shadow-soft disabled:opacity-60"
+              >
+                {viewActionLoading === 'save' ? '保存中...' : '保存视图'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -626,21 +914,25 @@ function MiniStat({ label, value, icon: Icon, color }: {
 function CrossTabPanel({
   surveyId,
   groupableQuestions,
+  targetableQuestions,
   allQuestions,
   groupQuestionId,
   targetQuestionId,
   onGroupChange,
   onTargetChange,
   crossTab,
+  segmentId,
 }: {
   surveyId: string;
   groupableQuestions: { id: string; title: string; type: string }[];
+  targetableQuestions: { id: string; title: string; type: string }[];
   allQuestions: { id: string; title: string; type: string }[];
   groupQuestionId: string;
   targetQuestionId: string;
   onGroupChange: (id: string) => void;
   onTargetChange: (id: string) => void;
   crossTab: CrossTabResult | null;
+  segmentId?: string;
 }) {
   const [showGroupDropdown, setShowGroupDropdown] = useState(false);
   const [showTargetDropdown, setShowTargetDropdown] = useState(false);
@@ -648,7 +940,9 @@ function CrossTabPanel({
   const groupQ = groupableQuestions.find((q) => q.id === groupQuestionId);
   const targetQ = allQuestions.find((q) => q.id === targetQuestionId);
 
-  const exportUrl = surveyApi.exportCrossTabUrl(surveyId, groupQuestionId, targetQuestionId);
+  const hasData = crossTab && (crossTab as any).hasData !== false;
+  const exportUrl = surveyApi.exportCrossTabUrl(surveyId, groupQuestionId, targetQuestionId, { segmentId });
+  const canExport = !!crossTab && hasData && !!groupQuestionId && !!targetQuestionId;
 
   return (
     <div className="space-y-6">
@@ -703,20 +997,26 @@ function CrossTabPanel({
               </button>
               {showTargetDropdown && (
                 <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-60 overflow-y-auto">
-                  {allQuestions.map((q) => (
-                    <button
-                      key={q.id}
-                      onClick={() => { onTargetChange(q.id); setShowTargetDropdown(false); }}
-                      className={`w-full text-left px-4 py-2.5 text-sm hover:bg-primary-50 ${
-                        q.id === targetQuestionId ? 'bg-primary-50 text-primary-700 font-medium' : 'text-slate-700'
-                      }`}
-                    >
-                      {q.title || '未命名题目'}
-                      <span className="text-xs text-slate-400 ml-2">
-                        {QUESTION_TYPE_LABELS[q.type as keyof typeof QUESTION_TYPE_LABELS]}
-                      </span>
-                    </button>
-                  ))}
+                  {targetableQuestions.length === 0 ? (
+                    <div className="px-4 py-3 text-sm text-slate-400">
+                      暂无可选目标题（需单选/下拉/多选/评分题）
+                    </div>
+                  ) : (
+                    targetableQuestions.map((q) => (
+                      <button
+                        key={q.id}
+                        onClick={() => { onTargetChange(q.id); setShowTargetDropdown(false); }}
+                        className={`w-full text-left px-4 py-2.5 text-sm hover:bg-primary-50 ${
+                          q.id === targetQuestionId ? 'bg-primary-50 text-primary-700 font-medium' : 'text-slate-700'
+                        }`}
+                      >
+                        {q.title || '未命名题目'}
+                        <span className="text-xs text-slate-400 ml-2">
+                          {QUESTION_TYPE_LABELS[q.type as keyof typeof QUESTION_TYPE_LABELS]}
+                        </span>
+                      </button>
+                    ))
+                  )}
                 </div>
               )}
             </div>
@@ -724,10 +1024,16 @@ function CrossTabPanel({
         </div>
 
         <a
-          href={exportUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-700 rounded-xl text-sm font-medium hover:bg-emerald-100 transition-colors"
+          href={canExport ? exportUrl : undefined}
+          target={canExport ? '_blank' : undefined}
+          rel={canExport ? 'noreferrer' : undefined}
+          aria-disabled={!canExport}
+          onClick={(e) => { if (!canExport) e.preventDefault(); }}
+          className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
+            canExport
+              ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+              : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+          }`}
         >
           <Download className="w-4 h-4" />
           导出交叉分析结果
@@ -738,6 +1044,16 @@ function CrossTabPanel({
         <div className="card p-16 text-center">
           <BarChart2 className="w-16 h-16 mx-auto mb-4 text-slate-300" />
           <p className="text-slate-500">请选择分组题和目标题以查看交叉分析结果</p>
+        </div>
+      ) : !hasData ? (
+        <div className="card p-16 text-center">
+          <div className="w-20 h-20 mx-auto mb-5 rounded-3xl bg-slate-50 flex items-center justify-center">
+            <BarChart2 className="w-10 h-10 text-slate-300" />
+          </div>
+          <h3 className="font-serif font-semibold text-xl text-slate-700 mb-2">暂无数据</h3>
+          <p className="text-slate-500 max-w-md mx-auto leading-relaxed">
+            当前组合暂无数据，可更换题目或调整筛选条件（如人群包）后重试
+          </p>
         </div>
       ) : (
         <div className="card p-6">

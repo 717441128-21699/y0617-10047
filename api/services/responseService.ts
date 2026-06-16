@@ -10,14 +10,78 @@ import type {
   TrendGranularity,
   CrossTabResult,
   CrossTabOption,
+  Segment,
+  SavedAnalysisView,
+  QuestionType,
 } from '../../shared/types.js';
+
+export interface ResponseFilterOptions {
+  answerFilters?: Record<string, string[]>;
+  tagFilters?: string[];
+  submitFrom?: string;
+  submitTo?: string;
+  segmentId?: string;
+  responseIds?: string[];
+}
+
+const CROSS_TAB_TARGET_TYPES: QuestionType[] = ['single', 'dropdown', 'multiple', 'rating'];
+
+async function getSegment(segmentId: string): Promise<Segment | undefined> {
+  const db = await getDb();
+  return db.data.segments.find((s) => s.id === segmentId);
+}
+
+async function resolveFilters(surveyId: string, options: ResponseFilterOptions): Promise<ResponseFilterOptions> {
+  let answerFilters = options.answerFilters ?? {};
+  let tagFilters = options.tagFilters ?? [];
+  let submitFrom = options.submitFrom;
+  let submitTo = options.submitTo;
+
+  if (options.segmentId) {
+    const seg = await getSegment(options.segmentId);
+    if (seg && seg.surveyId === surveyId) {
+      answerFilters = { ...seg.answerFilters, ...answerFilters };
+      tagFilters = [...new Set([...seg.tagFilters, ...tagFilters])];
+      if (seg.submitFrom) submitFrom = seg.submitFrom;
+      if (seg.submitTo) submitTo = seg.submitTo;
+    }
+  }
+  return { answerFilters, tagFilters, submitFrom, submitTo, responseIds: options.responseIds };
+}
+
+function matchesFilters(resp: SurveyResponse, f: ResponseFilterOptions): boolean {
+  if (f.responseIds && f.responseIds.length > 0 && !f.responseIds.includes(resp.id)) return false;
+
+  const { answerFilters, tagFilters, submitFrom, submitTo } = f;
+
+  if (submitFrom && resp.submittedAt < submitFrom) return false;
+  if (submitTo && resp.submittedAt > submitTo + 'T23:59:59.999Z') return false;
+
+  if (tagFilters && tagFilters.length > 0) {
+    if (!tagFilters.every((t) => resp.tags?.includes(t))) return false;
+  }
+
+  if (answerFilters) {
+    for (const [qId, allowed] of Object.entries(answerFilters)) {
+      if (!allowed || allowed.length === 0) continue;
+      const answer = resp.answers[qId];
+      if (answer === undefined || answer === null || answer === '') return false;
+      if (Array.isArray(answer)) {
+        if (!allowed.some((a) => answer.includes(a))) return false;
+      } else {
+        if (!allowed.includes(String(answer))) return false;
+      }
+    }
+  }
+  return true;
+}
 
 export async function submitResponse(
   surveyId: string,
   answers: Record<string, unknown>,
   respondentIp: string,
   browserId: string
-): Promise<SurveyResponse | { error: string; duplicate: boolean }> {
+): Promise<SurveyResponse | { error: string; duplicate: boolean; duplicateCount?: number; lastDuplicateAt?: string }> {
   const db = await getDb();
   const survey = db.data.surveys.find((s) => s.id === surveyId);
 
@@ -42,14 +106,21 @@ export async function submitResponse(
     return { error: '答卷数量已达上限', duplicate: false };
   }
 
-  let duplicateCount = 0;
   if (browserId) {
     const existing = db.data.responses.find((r) => r.surveyId === surveyId && r.browserId === browserId);
     if (existing) {
       existing.duplicateCount = (existing.duplicateCount ?? 0) + 1;
-      duplicateCount = existing.duplicateCount;
+      existing.lastDuplicateAt = now.toISOString();
+      if (existing.isDuplicate === undefined) existing.isDuplicate = false;
+      if (existing.tags === undefined) existing.tags = [];
+      if (existing.note === undefined) existing.note = '';
       await persist();
-      return { error: '您已经提交过答卷了', duplicate: true };
+      return {
+        error: '您已经提交过答卷了',
+        duplicate: true,
+        duplicateCount: existing.duplicateCount,
+        lastDuplicateAt: existing.lastDuplicateAt,
+      };
     }
   }
 
@@ -63,6 +134,7 @@ export async function submitResponse(
     tags: [],
     note: '',
     duplicateCount: 0,
+    lastDuplicateAt: null,
   };
 
   db.data.responses.push(response);
@@ -72,32 +144,13 @@ export async function submitResponse(
 
 export async function getResponses(
   surveyId: string,
-  filters?: Record<string, string | string[]>
+  options: ResponseFilterOptions = {}
 ): Promise<SurveyResponse[]> {
   const db = await getDb();
-  let responses = db.data.responses.filter((r) => r.surveyId === surveyId);
-
-  if (filters) {
-    responses = responses.filter((resp) => {
-      return Object.entries(filters).every(([qId, filterValue]) => {
-        const answer = resp.answers[qId];
-        if (!answer) return false;
-
-        if (Array.isArray(filterValue)) {
-          if (filterValue.length === 0) return true;
-          if (Array.isArray(answer)) {
-            return filterValue.some((fv) => answer.includes(fv));
-          }
-          return filterValue.includes(String(answer));
-        }
-
-        if (Array.isArray(answer)) {
-          return answer.includes(filterValue);
-        }
-        return String(answer) === filterValue;
-      });
-    });
-  }
+  const f = await resolveFilters(surveyId, options);
+  let responses = db.data.responses
+    .filter((r) => r.surveyId === surveyId)
+    .filter((r) => matchesFilters(r, f));
 
   const sorted = responses.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
   const seenBrowserIds = new Set<string>();
@@ -110,16 +163,19 @@ export async function getResponses(
         seenBrowserIds.add(r.browserId);
       }
     }
-    return { ...r, isDuplicate };
+    return { ...r, isDuplicate, tags: r.tags ?? [], note: r.note ?? '', duplicateCount: r.duplicateCount ?? 0, lastDuplicateAt: r.lastDuplicateAt ?? null };
   });
 }
 
-export async function getAnalytics(surveyId: string): Promise<SurveyAnalytics | undefined> {
+export async function getAnalytics(surveyId: string, options: ResponseFilterOptions = {}): Promise<SurveyAnalytics | undefined> {
   const db = await getDb();
   const survey = db.data.surveys.find((s) => s.id === surveyId);
   if (!survey) return undefined;
 
-  const responses = db.data.responses.filter((r) => r.surveyId === surveyId);
+  const f = await resolveFilters(surveyId, options);
+  const responses = db.data.responses
+    .filter((r) => r.surveyId === surveyId)
+    .filter((r) => matchesFilters(r, f));
   const totalResponses = responses.length;
 
   const questions: QuestionAnalytics[] = survey.questions.map((q) =>
@@ -132,15 +188,19 @@ export async function getAnalytics(surveyId: string): Promise<SurveyAnalytics | 
 export async function getTrend(
   surveyId: string,
   granularity: TrendGranularity = 'day',
-  days = 14
+  days = 14,
+  options: ResponseFilterOptions = {}
 ): Promise<TrendResult | undefined> {
   const db = await getDb();
   const survey = db.data.surveys.find((s) => s.id === surveyId);
   if (!survey) return undefined;
 
+  const f = await resolveFilters(surveyId, options);
   const now = new Date();
   const points: TrendResult['points'] = [];
-  const totalResponses = db.data.responses.filter((r) => r.surveyId === surveyId);
+  const totalResponses = db.data.responses
+    .filter((r) => r.surveyId === surveyId)
+    .filter((r) => matchesFilters(r, f));
 
   const ratingQuestion = survey.questions.find((q) => q.type === 'rating');
 
@@ -239,10 +299,15 @@ export async function getTrend(
   return { points, total, avgCompletionRate };
 }
 
+export function getEligibleTargetTypes(): QuestionType[] {
+  return [...CROSS_TAB_TARGET_TYPES];
+}
+
 export async function getCrossTab(
   surveyId: string,
   groupQuestionId: string,
-  targetQuestionId: string
+  targetQuestionId: string,
+  options: ResponseFilterOptions = {}
 ): Promise<CrossTabResult | undefined> {
   const db = await getDb();
   const survey = db.data.surveys.find((s) => s.id === surveyId);
@@ -252,8 +317,12 @@ export async function getCrossTab(
   const targetQ = survey.questions.find((q) => q.id === targetQuestionId);
   if (!groupQ || !targetQ) return undefined;
   if (!['single', 'dropdown'].includes(groupQ.type)) return undefined;
+  if (!CROSS_TAB_TARGET_TYPES.includes(targetQ.type)) return undefined;
 
-  const responses = db.data.responses.filter((r) => r.surveyId === surveyId);
+  const f = await resolveFilters(surveyId, options);
+  const responses = db.data.responses
+    .filter((r) => r.surveyId === surveyId)
+    .filter((r) => matchesFilters(r, f));
   const groupOptions = groupQ.options ?? [];
 
   const groups = groupOptions.map((opt) => {
@@ -340,6 +409,12 @@ export async function getCrossTab(
     overallAvgRating = overall.average;
   }
 
+  const hasData =
+    responses.length > 0 &&
+    resultGroups.some((g) => g.totalCount > 0) &&
+    ((overallOptions && overallOptions.some((o) => o.count > 0)) ||
+      overallAvgRating !== undefined);
+
   return {
     groupQuestionTitle: groupQ.title,
     targetQuestionTitle: targetQ.title,
@@ -347,6 +422,7 @@ export async function getCrossTab(
     groups: resultGroups,
     overallOptions,
     overallAvgRating,
+    hasData,
   };
 }
 
@@ -358,6 +434,9 @@ export async function updateResponseTags(
   const resp = db.data.responses.find((r) => r.id === responseId);
   if (!resp) return undefined;
   resp.tags = tags;
+  if (resp.note === undefined) resp.note = '';
+  if (resp.duplicateCount === undefined) resp.duplicateCount = 0;
+  if (resp.lastDuplicateAt === undefined) resp.lastDuplicateAt = null;
   await persist();
   return resp;
 }
@@ -370,23 +449,29 @@ export async function updateResponseNote(
   const resp = db.data.responses.find((r) => r.id === responseId);
   if (!resp) return undefined;
   resp.note = note;
+  if (resp.tags === undefined) resp.tags = [];
+  if (resp.duplicateCount === undefined) resp.duplicateCount = 0;
+  if (resp.lastDuplicateAt === undefined) resp.lastDuplicateAt = null;
   await persist();
   return resp;
 }
 
 export async function batchUpdateTags(
   surveyId: string,
-  filterOptions: { filters?: Record<string, string | string[]>; responseIds?: string[] },
+  filterOptions: ResponseFilterOptions & { responseIds?: string[] },
   tags: string[],
   mode: 'set' | 'add' | 'remove' = 'add'
 ): Promise<{ updated: number }> {
   const db = await getDb();
+  const f = await resolveFilters(surveyId, filterOptions);
   let targetIds: string[] = [];
 
   if (filterOptions.responseIds && filterOptions.responseIds.length > 0) {
     targetIds = filterOptions.responseIds;
-  } else if (filterOptions.filters) {
-    const filtered = await getResponses(surveyId, filterOptions.filters);
+  } else {
+    const filtered = db.data.responses
+      .filter((r) => r.surveyId === surveyId)
+      .filter((r) => matchesFilters(r, f));
     targetIds = filtered.map((r) => r.id);
   }
 
@@ -394,6 +479,7 @@ export async function batchUpdateTags(
   db.data.responses.forEach((r) => {
     if (r.surveyId !== surveyId) return;
     if (!targetIds.includes(r.id)) return;
+    if (r.tags === undefined) r.tags = [];
 
     if (mode === 'set') {
       r.tags = [...tags];
@@ -409,6 +495,163 @@ export async function batchUpdateTags(
 
   if (updated > 0) await persist();
   return { updated };
+}
+
+export async function batchUpdateNotes(
+  surveyId: string,
+  filterOptions: ResponseFilterOptions & { responseIds?: string[] },
+  note: string
+): Promise<{ updated: number }> {
+  const db = await getDb();
+  const f = await resolveFilters(surveyId, filterOptions);
+  let targetIds: string[] = [];
+
+  if (filterOptions.responseIds && filterOptions.responseIds.length > 0) {
+    targetIds = filterOptions.responseIds;
+  } else {
+    const filtered = db.data.responses
+      .filter((r) => r.surveyId === surveyId)
+      .filter((r) => matchesFilters(r, f));
+    targetIds = filtered.map((r) => r.id);
+  }
+
+  let updated = 0;
+  db.data.responses.forEach((r) => {
+    if (r.surveyId !== surveyId) return;
+    if (!targetIds.includes(r.id)) return;
+    r.note = note;
+    if (r.tags === undefined) r.tags = [];
+    updated++;
+  });
+
+  if (updated > 0) await persist();
+  return { updated };
+}
+
+export async function getSegments(surveyId: string): Promise<Segment[]> {
+  const db = await getDb();
+  return db.data.segments
+    .filter((s) => s.surveyId === surveyId)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export async function createSegment(
+  surveyId: string,
+  data: Omit<Segment, 'id' | 'surveyId' | 'createdAt' | 'updatedAt'>
+): Promise<Segment> {
+  const db = await getDb();
+  const now = new Date().toISOString();
+  const seg: Segment = {
+    id: generateId('seg'),
+    surveyId,
+    name: data.name,
+    description: data.description ?? '',
+    answerFilters: data.answerFilters ?? {},
+    tagFilters: data.tagFilters ?? [],
+    submitFrom: data.submitFrom ?? null,
+    submitTo: data.submitTo ?? null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  db.data.segments.push(seg);
+  await persist();
+  return seg;
+}
+
+export async function updateSegment(
+  segmentId: string,
+  data: Partial<Omit<Segment, 'id' | 'surveyId' | 'createdAt'>>
+): Promise<Segment | undefined> {
+  const db = await getDb();
+  const seg = db.data.segments.find((s) => s.id === segmentId);
+  if (!seg) return undefined;
+  Object.assign(seg, data, { updatedAt: new Date().toISOString() });
+  await persist();
+  return seg;
+}
+
+export async function deleteSegment(segmentId: string): Promise<boolean> {
+  const db = await getDb();
+  const idx = db.data.segments.findIndex((s) => s.id === segmentId);
+  if (idx < 0) return false;
+  db.data.segments.splice(idx, 1);
+  await persist();
+  return true;
+}
+
+export async function getSavedViews(surveyId: string): Promise<SavedAnalysisView[]> {
+  const db = await getDb();
+  return db.data.savedViews
+    .filter((v) => v.surveyId === surveyId)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export async function createSavedView(
+  surveyId: string,
+  data: Omit<SavedAnalysisView, 'id' | 'surveyId' | 'createdAt' | 'updatedAt'>
+): Promise<SavedAnalysisView> {
+  const db = await getDb();
+  const now = new Date().toISOString();
+  const v: SavedAnalysisView = {
+    id: generateId('view'),
+    surveyId,
+    name: data.name,
+    tab: data.tab ?? 'overview',
+    segmentId: data.segmentId ?? null,
+    trendGranularity: data.trendGranularity ?? 'day',
+    trendDays: data.trendDays ?? 14,
+    groupQuestionId: data.groupQuestionId ?? null,
+    targetQuestionId: data.targetQuestionId ?? null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  db.data.savedViews.push(v);
+  await persist();
+  return v;
+}
+
+export async function updateSavedView(
+  viewId: string,
+  data: Partial<Omit<SavedAnalysisView, 'id' | 'surveyId' | 'createdAt'>>
+): Promise<SavedAnalysisView | undefined> {
+  const db = await getDb();
+  const v = db.data.savedViews.find((x) => x.id === viewId);
+  if (!v) return undefined;
+  Object.assign(v, data, { updatedAt: new Date().toISOString() });
+  await persist();
+  return v;
+}
+
+export async function cloneSavedView(viewId: string, newName: string): Promise<SavedAnalysisView | undefined> {
+  const db = await getDb();
+  const v = db.data.savedViews.find((x) => x.id === viewId);
+  if (!v) return undefined;
+  const now = new Date().toISOString();
+  const clone: SavedAnalysisView = {
+    id: generateId('view'),
+    surveyId: v.surveyId,
+    name: newName,
+    tab: v.tab,
+    segmentId: v.segmentId,
+    trendGranularity: v.trendGranularity,
+    trendDays: v.trendDays,
+    groupQuestionId: v.groupQuestionId,
+    targetQuestionId: v.targetQuestionId,
+    createdAt: now,
+    updatedAt: now,
+  };
+  db.data.savedViews.push(clone);
+  await persist();
+  return clone;
+}
+
+export async function deleteSavedView(viewId: string): Promise<boolean> {
+  const db = await getDb();
+  const idx = db.data.savedViews.findIndex((v) => v.id === viewId);
+  if (idx < 0) return false;
+  db.data.savedViews.splice(idx, 1);
+  await persist();
+  return true;
 }
 
 function analyzeQuestion(question: Question, responses: SurveyResponse[]): QuestionAnalytics {

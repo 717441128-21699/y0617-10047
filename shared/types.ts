@@ -68,6 +68,7 @@ export interface SurveyResponse {
   tags: string[];
   note: string;
   duplicateCount: number;
+  lastDuplicateAt: string | null;
 }
 
 export interface SurveyListItem {
@@ -144,4 +145,34 @@ export interface CrossTabResult {
   groups: CrossTabGroup[];
   overallOptions?: CrossTabOption[];
   overallAvgRating?: number;
+  hasData: boolean;
+}
+
+export interface Segment {
+  id: string;
+  surveyId: string;
+  name: string;
+  description: string;
+  answerFilters: Record<string, string[]>;
+  tagFilters: string[];
+  submitFrom: string | null;
+  submitTo: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AnalyticsTab = 'overview' | 'trend' | 'crosstab';
+
+export interface SavedAnalysisView {
+  id: string;
+  surveyId: string;
+  name: string;
+  tab: AnalyticsTab;
+  segmentId: string | null;
+  trendGranularity: TrendGranularity;
+  trendDays: number;
+  groupQuestionId: string | null;
+  targetQuestionId: string | null;
+  createdAt: string;
+  updatedAt: string;
 }

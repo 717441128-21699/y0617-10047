@@ -2,7 +2,7 @@ import { Low } from 'lowdb';
 import { JSONFile } from 'lowdb/node';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Survey, SurveyResponse } from '../../shared/types.js';
+import type { Survey, SurveyResponse, SavedAnalysisView, Segment } from '../../shared/types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const file = path.join(__dirname, '../../data/db.json');
@@ -10,11 +10,15 @@ const file = path.join(__dirname, '../../data/db.json');
 interface DatabaseSchema {
   surveys: Survey[];
   responses: SurveyResponse[];
+  savedViews: SavedAnalysisView[];
+  segments: Segment[];
 }
 
 const defaultData: DatabaseSchema = {
   surveys: [],
   responses: [],
+  savedViews: [],
+  segments: [],
 };
 
 let db: Low<DatabaseSchema> | null = null;
@@ -24,6 +28,8 @@ export async function getDb(): Promise<Low<DatabaseSchema>> {
     const adapter = new JSONFile<DatabaseSchema>(file);
     db = new Low(adapter, defaultData);
     await db.read();
+    if (!db.data.savedViews) db.data.savedViews = [];
+    if (!db.data.segments) db.data.segments = [];
   }
   return db;
 }

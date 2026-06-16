@@ -132,8 +132,15 @@ export async function submitResponse(req: Request, res: Response): Promise<void>
 }
 
 export async function listResponses(req: Request, res: Response): Promise<void> {
-  const filters = req.query.filters ? (JSON.parse(String(req.query.filters)) as Record<string, string | string[]>) : undefined;
-  const responses = await responseService.getResponses(req.params.id, filters);
+  const parseOpt = (key: string) => req.query[key] ? JSON.parse(String(req.query[key])) : undefined;
+  const options = {
+    answerFilters: parseOpt('answerFilters'),
+    tagFilters: parseOpt('tagFilters'),
+    submitFrom: req.query.submitFrom ? String(req.query.submitFrom) : undefined,
+    submitTo: req.query.submitTo ? String(req.query.submitTo) : undefined,
+    segmentId: req.query.segmentId ? String(req.query.segmentId) : undefined,
+  };
+  const responses = await responseService.getResponses(req.params.id, options);
   res.json(responses);
 }
 
@@ -143,8 +150,16 @@ export async function exportResponses(req: Request, res: Response): Promise<void
     res.status(404).json({ error: '问卷不存在' });
     return;
   }
-  const filters = req.query.filters ? (JSON.parse(String(req.query.filters)) as Record<string, string | string[]>) : undefined;
-  const responses = await responseService.getResponses(req.params.id, filters);
+  const parseOpt = (key: string) => req.query[key] ? JSON.parse(String(req.query[key])) : undefined;
+  const filterOptions = {
+    answerFilters: parseOpt('answerFilters'),
+    tagFilters: parseOpt('tagFilters'),
+    submitFrom: req.query.submitFrom ? String(req.query.submitFrom) : undefined,
+    submitTo: req.query.submitTo ? String(req.query.submitTo) : undefined,
+    segmentId: req.query.segmentId ? String(req.query.segmentId) : undefined,
+  };
+  const filtered = Object.values(filterOptions).some((v) => v !== undefined && !(Array.isArray(v) && v.length === 0) && !(typeof v === 'object' && Object.keys(v).length === 0));
+  const responses = await responseService.getResponses(req.params.id, filterOptions);
 
   const headerRow = ['提交时间', '浏览器ID', '是否重复', '拦截次数', '标签', '备注', ...survey.questions.map((q) => q.title)];
   const dataRows = responses.map((r) => {
@@ -167,7 +182,7 @@ export async function exportResponses(req: Request, res: Response): Promise<void
   XLSX.utils.book_append_sheet(wb, ws, '答卷数据');
   const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 
-  const filename = encodeURIComponent(`${survey.title}_答卷数据${filters ? '（已筛选）' : ''}.xlsx`);
+  const filename = encodeURIComponent(`${survey.title}_答卷数据${filtered ? '（已筛选）' : ''}.xlsx`);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filename}`);
   res.send(buffer);
@@ -206,7 +221,15 @@ function formatAnswerForExport(q: {
 }
 
 export async function getAnalytics(req: Request, res: Response): Promise<void> {
-  const analytics = await responseService.getAnalytics(req.params.id);
+  const parseOpt = (key: string) => req.query[key] ? JSON.parse(String(req.query[key])) : undefined;
+  const options = {
+    answerFilters: parseOpt('answerFilters'),
+    tagFilters: parseOpt('tagFilters'),
+    submitFrom: req.query.submitFrom ? String(req.query.submitFrom) : undefined,
+    submitTo: req.query.submitTo ? String(req.query.submitTo) : undefined,
+    segmentId: req.query.segmentId ? String(req.query.segmentId) : undefined,
+  };
+  const analytics = await responseService.getAnalytics(req.params.id, options);
   if (!analytics) {
     res.status(404).json({ error: '问卷不存在' });
     return;
@@ -217,7 +240,15 @@ export async function getAnalytics(req: Request, res: Response): Promise<void> {
 export async function getTrend(req: Request, res: Response): Promise<void> {
   const granularity = (req.query.granularity as 'day' | 'hour') ?? 'day';
   const days = req.query.days ? Number(req.query.days) : 14;
-  const trend = await responseService.getTrend(req.params.id, granularity, days);
+  const parseOpt = (key: string) => req.query[key] ? JSON.parse(String(req.query[key])) : undefined;
+  const options = {
+    answerFilters: parseOpt('answerFilters'),
+    tagFilters: parseOpt('tagFilters'),
+    submitFrom: req.query.submitFrom ? String(req.query.submitFrom) : undefined,
+    submitTo: req.query.submitTo ? String(req.query.submitTo) : undefined,
+    segmentId: req.query.segmentId ? String(req.query.segmentId) : undefined,
+  };
+  const trend = await responseService.getTrend(req.params.id, granularity, days, options);
   if (!trend) {
     res.status(404).json({ error: '问卷不存在' });
     return;
@@ -231,10 +262,19 @@ export async function getCrossTab(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: '缺少分组题或目标题参数' });
     return;
   }
+  const parseOpt = (key: string) => req.query[key] ? JSON.parse(String(req.query[key])) : undefined;
+  const options = {
+    answerFilters: parseOpt('answerFilters'),
+    tagFilters: parseOpt('tagFilters'),
+    submitFrom: req.query.submitFrom ? String(req.query.submitFrom) : undefined,
+    submitTo: req.query.submitTo ? String(req.query.submitTo) : undefined,
+    segmentId: req.query.segmentId ? String(req.query.segmentId) : undefined,
+  };
   const result = await responseService.getCrossTab(
     req.params.id,
     String(groupQuestionId),
-    String(targetQuestionId)
+    String(targetQuestionId),
+    options
   );
   if (!result) {
     res.status(404).json({ error: '问卷或题目不存在' });
@@ -254,13 +294,36 @@ export async function exportCrossTab(req: Request, res: Response): Promise<void>
     res.status(400).json({ error: '缺少分组题或目标题参数' });
     return;
   }
+  const parseOpt = (key: string) => req.query[key] ? JSON.parse(String(req.query[key])) : undefined;
+  const options = {
+    answerFilters: parseOpt('answerFilters'),
+    tagFilters: parseOpt('tagFilters'),
+    submitFrom: req.query.submitFrom ? String(req.query.submitFrom) : undefined,
+    submitTo: req.query.submitTo ? String(req.query.submitTo) : undefined,
+    segmentId: req.query.segmentId ? String(req.query.segmentId) : undefined,
+  };
   const result = await responseService.getCrossTab(
     req.params.id,
     String(groupQuestionId),
-    String(targetQuestionId)
+    String(targetQuestionId),
+    options
   );
   if (!result) {
     res.status(404).json({ error: '问卷或题目不存在' });
+    return;
+  }
+
+  if (!result.hasData) {
+    const headerRow = ['提示'];
+    const dataRows = [['当前交叉分析组合暂无数据，请尝试更换题目或调整筛选条件。']];
+    const ws = XLSX.utils.aoa_to_sheet([headerRow, ...dataRows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, '交叉分析');
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+    const filename = encodeURIComponent(`${survey.title}_交叉分析.xlsx`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filename}`);
+    res.send(buffer);
     return;
   }
 
@@ -352,16 +415,125 @@ export async function updateResponseNote(req: Request, res: Response): Promise<v
 }
 
 export async function batchUpdateTags(req: Request, res: Response): Promise<void> {
-  const { tags, mode, filters, responseIds } = req.body;
+  const { tags, mode, answerFilters, tagFilters, submitFrom, submitTo, segmentId, responseIds } = req.body;
   if (!Array.isArray(tags)) {
     res.status(400).json({ error: 'tags 必须是数组' });
     return;
   }
   const result = await responseService.batchUpdateTags(
     req.params.id,
-    { filters, responseIds },
+    { answerFilters, tagFilters, submitFrom, submitTo, segmentId, responseIds },
     tags,
     mode ?? 'add'
   );
   res.json(result);
+}
+
+export async function batchUpdateNotes(req: Request, res: Response): Promise<void> {
+  const { note, answerFilters, tagFilters, submitFrom, submitTo, segmentId, responseIds } = req.body;
+  if (typeof note !== 'string') {
+    res.status(400).json({ error: 'note 必须是字符串' });
+    return;
+  }
+  const result = await responseService.batchUpdateNotes(
+    req.params.id,
+    { answerFilters, tagFilters, submitFrom, submitTo, segmentId, responseIds },
+    note
+  );
+  res.json(result);
+}
+
+export async function listSegments(req: Request, res: Response): Promise<void> {
+  const segments = await responseService.getSegments(req.params.id);
+  res.json(segments);
+}
+
+export async function createSegment(req: Request, res: Response): Promise<void> {
+  const { name, description, answerFilters, tagFilters, submitFrom, submitTo } = req.body;
+  if (!name || typeof name !== 'string') {
+    res.status(400).json({ error: 'name 不能为空' });
+    return;
+  }
+  const seg = await responseService.createSegment(req.params.id, {
+    name,
+    description: description ?? '',
+    answerFilters: answerFilters ?? {},
+    tagFilters: tagFilters ?? [],
+    submitFrom: submitFrom ?? null,
+    submitTo: submitTo ?? null,
+  });
+  res.status(201).json(seg);
+}
+
+export async function updateSegment(req: Request, res: Response): Promise<void> {
+  const seg = await responseService.updateSegment(req.params.segmentId, req.body);
+  if (!seg) {
+    res.status(404).json({ error: '人群包不存在' });
+    return;
+  }
+  res.json(seg);
+}
+
+export async function deleteSegment(req: Request, res: Response): Promise<void> {
+  const ok = await responseService.deleteSegment(req.params.segmentId);
+  if (!ok) {
+    res.status(404).json({ error: '人群包不存在' });
+    return;
+  }
+  res.json({ success: true });
+}
+
+export async function listSavedViews(req: Request, res: Response): Promise<void> {
+  const views = await responseService.getSavedViews(req.params.id);
+  res.json(views);
+}
+
+export async function createSavedView(req: Request, res: Response): Promise<void> {
+  const { name, tab, segmentId, trendGranularity, trendDays, groupQuestionId, targetQuestionId } = req.body;
+  if (!name || typeof name !== 'string') {
+    res.status(400).json({ error: 'name 不能为空' });
+    return;
+  }
+  const v = await responseService.createSavedView(req.params.id, {
+    name,
+    tab: tab ?? 'overview',
+    segmentId: segmentId ?? null,
+    trendGranularity: trendGranularity ?? 'day',
+    trendDays: trendDays ?? 14,
+    groupQuestionId: groupQuestionId ?? null,
+    targetQuestionId: targetQuestionId ?? null,
+  });
+  res.status(201).json(v);
+}
+
+export async function updateSavedView(req: Request, res: Response): Promise<void> {
+  const v = await responseService.updateSavedView(req.params.viewId, req.body);
+  if (!v) {
+    res.status(404).json({ error: '视图不存在' });
+    return;
+  }
+  res.json(v);
+}
+
+export async function cloneSavedView(req: Request, res: Response): Promise<void> {
+  const { name } = req.body;
+  if (!name || typeof name !== 'string') {
+    res.status(400).json({ error: 'name 不能为空' });
+    return;
+  }
+  const v = await responseService.cloneSavedView(req.params.viewId, name);
+  if (!v) {
+    res.status(404).json({ error: '视图不存在' });
+    return;
+  }
+  res.status(201).json(v);
+}
+
+export async function deleteSavedView(req: Request, res: Response): Promise<void> {
+  const ok = await responseService.deleteSavedView(req.params.viewId);
+  if (!ok) {
+    res.status(404).json({ error: '视图不存在' });
+    return;
+  }
+  res.json({ success: true });
 }
