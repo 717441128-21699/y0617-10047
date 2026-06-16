@@ -1,0 +1,21 @@
+{
+  "surveys": [
+    {
+      "id": "survey_mqh3m9qs_sodn7x",
+      "token": "Mr5t7tmD",
+      "title": "????",
+      "description": "",
+      "status": "draft",
+      "questions": [],
+      "settings": {
+        "startTime": null,
+        "endTime": null,
+        "maxResponses": null,
+        "password": null
+      },
+      "createdAt": "2026-06-16T20:32:33.748Z",
+      "updatedAt": "2026-06-16T20:32:33.748Z"
+    }
+  ],
+  "responses": []
+}
