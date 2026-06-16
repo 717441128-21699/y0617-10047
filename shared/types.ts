@@ -65,6 +65,9 @@ export interface SurveyResponse {
   respondentIp: string;
   browserId: string;
   isDuplicate?: boolean;
+  tags: string[];
+  note: string;
+  duplicateCount: number;
 }
 
 export interface SurveyListItem {
@@ -101,4 +104,44 @@ export interface QuestionAnalytics {
 export interface SurveyAnalytics {
   totalResponses: number;
   questions: QuestionAnalytics[];
+}
+
+export interface TrendDataPoint {
+  time: string;
+  submissions: number;
+  completionRate: number;
+  avgRating?: number;
+}
+
+export type TrendGranularity = 'day' | 'hour';
+
+export interface TrendResult {
+  points: TrendDataPoint[];
+  total: number;
+  avgCompletionRate: number;
+}
+
+export interface CrossTabOption {
+  label: string;
+  value: string;
+  count: number;
+  percentage: number;
+  avgRating?: number;
+}
+
+export interface CrossTabGroup {
+  groupLabel: string;
+  groupValue: string;
+  totalCount: number;
+  options: CrossTabOption[];
+  avgRating?: number;
+}
+
+export interface CrossTabResult {
+  groupQuestionTitle: string;
+  targetQuestionTitle: string;
+  targetType: QuestionType;
+  groups: CrossTabGroup[];
+  overallOptions?: CrossTabOption[];
+  overallAvgRating?: number;
 }

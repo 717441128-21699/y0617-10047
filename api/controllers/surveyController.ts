@@ -125,7 +125,7 @@ export async function submitResponse(req: Request, res: Response): Promise<void>
     browserId
   );
   if ('error' in result) {
-    res.status(400).json({ error: result.error, duplicate: result.error === '您已经提交过答卷了' });
+    res.status(400).json({ error: result.error, duplicate: result.duplicate });
     return;
   }
   res.status(201).json(result);
@@ -146,37 +146,18 @@ export async function exportResponses(req: Request, res: Response): Promise<void
   const filters = req.query.filters ? (JSON.parse(String(req.query.filters)) as Record<string, string | string[]>) : undefined;
   const responses = await responseService.getResponses(req.params.id, filters);
 
-  const headerRow = ['提交时间', '浏览器ID', '是否重复', ...survey.questions.map((q) => q.title)];
+  const headerRow = ['提交时间', '浏览器ID', '是否重复', '拦截次数', '标签', '备注', ...survey.questions.map((q) => q.title)];
   const dataRows = responses.map((r) => {
     const row: (string | number)[] = [
       r.submittedAt,
       r.browserId ? r.browserId.slice(0, 12) : '',
       r.isDuplicate ? '是' : '',
+      r.duplicateCount > 0 ? String(r.duplicateCount) : '',
+      r.tags.join('、'),
+      r.note,
     ];
     survey.questions.forEach((q) => {
-      const answer = r.answers[q.id];
-      if (answer === undefined || answer === null) {
-        row.push('');
-      } else if (Array.isArray(answer)) {
-        const labels = answer
-          .map((v) => q.options?.find((o) => o.value === v)?.label ?? String(v))
-          .join('、');
-        row.push(labels);
-      } else if (typeof answer === 'object') {
-        const parts: string[] = [];
-        q.rows?.forEach((rowItem) => {
-          const val = (answer as Record<string, string>)[rowItem.id];
-          const colLabel = q.columns?.find((c) => c.value === val)?.label ?? String(val ?? '');
-          parts.push(`${rowItem.label}: ${colLabel}`);
-        });
-        row.push(parts.join('；'));
-      } else {
-        if (q.options) {
-          row.push(q.options.find((o) => o.value === String(answer))?.label ?? String(answer));
-        } else {
-          row.push(String(answer));
-        }
-      }
+      row.push(formatAnswerForExport(q, r.answers[q.id]));
     });
     return row;
   });
@@ -192,6 +173,38 @@ export async function exportResponses(req: Request, res: Response): Promise<void
   res.send(buffer);
 }
 
+function formatAnswerForExport(q: {
+  id: string;
+  type: string;
+  options?: { label: string; value: string }[];
+  rows?: { id: string; label: string }[];
+  columns?: { id: string; label: string; value: string }[];
+}, answer: unknown): string {
+  if (answer === undefined || answer === null || answer === '') return '';
+  if (Array.isArray(answer)) {
+    return answer
+      .map((v) => q.options?.find((o) => o.value === v)?.label ?? String(v))
+      .join('、');
+  }
+  if (typeof answer === 'object') {
+    const parts: string[] = [];
+    q.rows?.forEach((rowItem) => {
+      const val = (answer as Record<string, string>)[rowItem.id];
+      if (val !== undefined && val !== null && val !== '') {
+        const colLabel = q.columns?.find((c) => c.value === val)?.label ?? String(val);
+        parts.push(`${rowItem.label}: ${colLabel}`);
+      } else {
+        parts.push(`${rowItem.label}: 未作答`);
+      }
+    });
+    return parts.join('；');
+  }
+  if (q.options) {
+    return q.options.find((o) => o.value === String(answer))?.label ?? String(answer);
+  }
+  return String(answer);
+}
+
 export async function getAnalytics(req: Request, res: Response): Promise<void> {
   const analytics = await responseService.getAnalytics(req.params.id);
   if (!analytics) {
@@ -199,4 +212,156 @@ export async function getAnalytics(req: Request, res: Response): Promise<void> {
     return;
   }
   res.json(analytics);
+}
+
+export async function getTrend(req: Request, res: Response): Promise<void> {
+  const granularity = (req.query.granularity as 'day' | 'hour') ?? 'day';
+  const days = req.query.days ? Number(req.query.days) : 14;
+  const trend = await responseService.getTrend(req.params.id, granularity, days);
+  if (!trend) {
+    res.status(404).json({ error: '问卷不存在' });
+    return;
+  }
+  res.json(trend);
+}
+
+export async function getCrossTab(req: Request, res: Response): Promise<void> {
+  const { groupQuestionId, targetQuestionId } = req.query;
+  if (!groupQuestionId || !targetQuestionId) {
+    res.status(400).json({ error: '缺少分组题或目标题参数' });
+    return;
+  }
+  const result = await responseService.getCrossTab(
+    req.params.id,
+    String(groupQuestionId),
+    String(targetQuestionId)
+  );
+  if (!result) {
+    res.status(404).json({ error: '问卷或题目不存在' });
+    return;
+  }
+  res.json(result);
+}
+
+export async function exportCrossTab(req: Request, res: Response): Promise<void> {
+  const survey = await surveyService.getSurveyById(req.params.id);
+  if (!survey) {
+    res.status(404).json({ error: '问卷不存在' });
+    return;
+  }
+  const { groupQuestionId, targetQuestionId } = req.query;
+  if (!groupQuestionId || !targetQuestionId) {
+    res.status(400).json({ error: '缺少分组题或目标题参数' });
+    return;
+  }
+  const result = await responseService.getCrossTab(
+    req.params.id,
+    String(groupQuestionId),
+    String(targetQuestionId)
+  );
+  if (!result) {
+    res.status(404).json({ error: '问卷或题目不存在' });
+    return;
+  }
+
+  const headerRow = ['分组', '样本量', '选项', '选择人数', '占比(%)'];
+  const dataRows: (string | number)[][] = [];
+
+  if (result.targetType === 'rating') {
+    const ratingHeader = ['分组', '样本量', '平均分'];
+    const ratingRows: (string | number)[][] = result.groups.map((g) => [
+      g.groupLabel,
+      g.totalCount,
+      g.avgRating?.toFixed(2) ?? '-',
+    ]);
+    if (result.overallAvgRating !== undefined) {
+      ratingRows.push(['总体', result.groups.reduce((s, g) => s + g.totalCount, 0), result.overallAvgRating.toFixed(2)]);
+    }
+    const ws = XLSX.utils.aoa_to_sheet([ratingHeader, ...ratingRows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, '交叉分析');
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+    const filename = encodeURIComponent(`${survey.title}_交叉分析.xlsx`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filename}`);
+    res.send(buffer);
+    return;
+  }
+
+  result.groups.forEach((g) => {
+    g.options.forEach((opt, i) => {
+      dataRows.push([
+        i === 0 ? g.groupLabel : '',
+        i === 0 ? g.totalCount : '',
+        opt.label,
+        opt.count,
+        opt.percentage.toFixed(2),
+      ]);
+    });
+  });
+
+  if (result.overallOptions) {
+    const overallTotal = result.groups.reduce((s, g) => s + g.totalCount, 0);
+    result.overallOptions.forEach((opt, i) => {
+      dataRows.push([
+        i === 0 ? '总体' : '',
+        i === 0 ? overallTotal : '',
+        opt.label,
+        opt.count,
+        opt.percentage.toFixed(2),
+      ]);
+    });
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet([headerRow, ...dataRows]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '交叉分析');
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  const filename = encodeURIComponent(`${survey.title}_交叉分析.xlsx`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filename}`);
+  res.send(buffer);
+}
+
+export async function updateResponseTags(req: Request, res: Response): Promise<void> {
+  const { tags } = req.body;
+  if (!Array.isArray(tags)) {
+    res.status(400).json({ error: 'tags 必须是数组' });
+    return;
+  }
+  const result = await responseService.updateResponseTags(req.params.responseId, tags);
+  if (!result) {
+    res.status(404).json({ error: '答卷不存在' });
+    return;
+  }
+  res.json(result);
+}
+
+export async function updateResponseNote(req: Request, res: Response): Promise<void> {
+  const { note } = req.body;
+  if (typeof note !== 'string') {
+    res.status(400).json({ error: 'note 必须是字符串' });
+    return;
+  }
+  const result = await responseService.updateResponseNote(req.params.responseId, note);
+  if (!result) {
+    res.status(404).json({ error: '答卷不存在' });
+    return;
+  }
+  res.json(result);
+}
+
+export async function batchUpdateTags(req: Request, res: Response): Promise<void> {
+  const { tags, mode, filters, responseIds } = req.body;
+  if (!Array.isArray(tags)) {
+    res.status(400).json({ error: 'tags 必须是数组' });
+    return;
+  }
+  const result = await responseService.batchUpdateTags(
+    req.params.id,
+    { filters, responseIds },
+    tags,
+    mode ?? 'add'
+  );
+  res.json(result);
 }

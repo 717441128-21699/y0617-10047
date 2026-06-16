@@ -179,3 +179,37 @@ export function validateAnswer(question: Question, value: unknown): string | nul
 
   return null;
 }
+
+export function formatAnswerForDisplay(question: Question, answer: unknown): string {
+  if (answer === undefined || answer === null || answer === '') return '— 未作答 —';
+
+  if (Array.isArray(answer)) {
+    const labels = answer
+      .map((v) => question.options?.find((o) => o.value === v)?.label ?? String(v))
+      .join('、');
+    return labels || '— 未作答 —';
+  }
+
+  if (typeof answer === 'object') {
+    const parts: string[] = [];
+    question.rows?.forEach((rowItem) => {
+      const val = (answer as Record<string, string>)[rowItem.id];
+      if (val !== undefined && val !== null && val !== '') {
+        const colLabel = question.columns?.find((c) => c.value === val)?.label ?? String(val);
+        parts.push(`${rowItem.label}: ${colLabel}`);
+      } else {
+        parts.push(`${rowItem.label}: 未作答`);
+      }
+    });
+    return parts.length > 0 ? parts.join('；') : '— 未作答 —';
+  }
+
+  if (question.type === 'rating') {
+    return `${answer} 分`;
+  }
+
+  if (question.options) {
+    return question.options.find((o) => o.value === String(answer))?.label ?? String(answer);
+  }
+  return String(answer);
+}

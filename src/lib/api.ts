@@ -5,6 +5,9 @@ import type {
   Question,
   SurveyResponse,
   SurveyAnalytics,
+  TrendResult,
+  TrendGranularity,
+  CrossTabResult,
 } from '../../shared/types.js';
 
 const BASE = '/api/surveys';
@@ -106,6 +109,45 @@ export const surveyApi = {
 
   getAnalytics(id: string): Promise<SurveyAnalytics> {
     return request<SurveyAnalytics>(`/${id}/analytics`, { method: 'GET' });
+  },
+
+  getTrend(id: string, granularity: TrendGranularity = 'day', days = 14): Promise<TrendResult> {
+    const qs = `?granularity=${granularity}&days=${days}`;
+    return request<TrendResult>(`/${id}/trend${qs}`, { method: 'GET' });
+  },
+
+  getCrossTab(id: string, groupQuestionId: string, targetQuestionId: string): Promise<CrossTabResult> {
+    const qs = `?groupQuestionId=${encodeURIComponent(groupQuestionId)}&targetQuestionId=${encodeURIComponent(targetQuestionId)}`;
+    return request<CrossTabResult>(`/${id}/cross-tab${qs}`, { method: 'GET' });
+  },
+
+  exportCrossTabUrl(id: string, groupQuestionId: string, targetQuestionId: string): string {
+    const qs = `?groupQuestionId=${encodeURIComponent(groupQuestionId)}&targetQuestionId=${encodeURIComponent(targetQuestionId)}`;
+    return `${BASE}/${id}/cross-tab/export${qs}`;
+  },
+
+  updateResponseTags(responseId: string, tags: string[]): Promise<SurveyResponse> {
+    return request<SurveyResponse>(`/responses/${responseId}/tags`, {
+      method: 'PUT',
+      body: JSON.stringify({ tags }),
+    });
+  },
+
+  updateResponseNote(responseId: string, note: string): Promise<SurveyResponse> {
+    return request<SurveyResponse>(`/responses/${responseId}/note`, {
+      method: 'PUT',
+      body: JSON.stringify({ note }),
+    });
+  },
+
+  batchUpdateTags(
+    id: string,
+    data: { tags: string[]; mode: 'add' | 'remove' | 'set'; filters?: Record<string, string | string[]>; responseIds?: string[] }
+  ): Promise<{ updated: number }> {
+    return request<{ updated: number }>(`/${id}/responses/batch-tags`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
   },
 
   updateQuestions(id: string, questions: Question[]): Promise<Survey> {

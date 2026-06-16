@@ -13,8 +13,14 @@ router.put('/:id', ctrl.updateSurvey);
 router.delete('/:id', ctrl.deleteSurvey);
 router.post('/:id/publish', ctrl.publishSurvey);
 router.post('/:id/close', ctrl.closeSurvey);
+router.get('/:id/analytics', ctrl.getAnalytics);
+router.get('/:id/trend', ctrl.getTrend);
+router.get('/:id/cross-tab', ctrl.getCrossTab);
+router.get('/:id/cross-tab/export', ctrl.exportCrossTab);
 router.get('/:id/responses', ctrl.listResponses);
 router.get('/:id/responses/export', ctrl.exportResponses);
-router.get('/:id/analytics', ctrl.getAnalytics);
+router.post('/:id/responses/batch-tags', ctrl.batchUpdateTags);
+router.put('/responses/:responseId/tags', ctrl.updateResponseTags);
+router.put('/responses/:responseId/note', ctrl.updateResponseNote);
 
 export default router;
