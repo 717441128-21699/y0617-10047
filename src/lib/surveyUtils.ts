@@ -117,6 +117,43 @@ export function evaluateLogic(
   return visible;
 }
 
+const BROWSER_ID_KEY = 'survey_browser_id';
+const SUBMITTED_KEY = 'survey_submitted_tokens';
+
+export function getBrowserId(): string {
+  try {
+    let id = localStorage.getItem(BROWSER_ID_KEY);
+    if (!id) {
+      id = generateId('bid');
+      localStorage.setItem(BROWSER_ID_KEY, id);
+    }
+    return id;
+  } catch {
+    return generateId('bid');
+  }
+}
+
+export function isSurveySubmitted(token: string): boolean {
+  try {
+    const raw = localStorage.getItem(SUBMITTED_KEY);
+    const list: string[] = raw ? JSON.parse(raw) : [];
+    return list.includes(token);
+  } catch {
+    return false;
+  }
+}
+
+export function markSurveySubmitted(token: string): void {
+  try {
+    const raw = localStorage.getItem(SUBMITTED_KEY);
+    const list: string[] = raw ? JSON.parse(raw) : [];
+    if (!list.includes(token)) list.push(token);
+    localStorage.setItem(SUBMITTED_KEY, JSON.stringify(list));
+  } catch {
+    /* ignore */
+  }
+}
+
 export function validateAnswer(question: Question, value: unknown): string | null {
   if (!question.required) return null;
 

@@ -1,12 +1,18 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { Lock, CheckCircle2, AlertCircle, Send } from 'lucide-react';
+import { Lock, CheckCircle2, AlertCircle, Send, ShieldAlert } from 'lucide-react';
 import { surveyApi } from '../lib/api.js';
 import type { Survey } from '../../shared/types.js';
 import QuestionRenderer from '../components/QuestionRenderer.js';
-import { evaluateLogic, validateAnswer } from '../lib/surveyUtils.js';
+import {
+  evaluateLogic,
+  validateAnswer,
+  getBrowserId,
+  isSurveySubmitted,
+  markSurveySubmitted,
+} from '../lib/surveyUtils.js';
 
-type Stage = 'loading' | 'password' | 'form' | 'success' | 'error' | 'closed';
+type Stage = 'loading' | 'password' | 'form' | 'success' | 'error' | 'closed' | 'already';
 
 export default function SurveyAnswer({ embed = false }: { embed?: boolean }) {
   const { token } = useParams<{ token: string }>();
@@ -22,6 +28,10 @@ export default function SurveyAnswer({ embed = false }: { embed?: boolean }) {
 
   useEffect(() => {
     if (!token) return;
+    if (isSurveySubmitted(token)) {
+      setStage('already');
+      return;
+    }
     surveyApi
       .getByToken(token)
       .then((s) => {
@@ -60,12 +70,16 @@ export default function SurveyAnswer({ embed = false }: { embed?: boolean }) {
     }
   }
 
+  const allLogic = survey?.questions.flatMap((q) => q.logic ?? []) ?? [];
+  const visibleIds = survey ? evaluateLogic(allLogic, answers, survey.questions) : new Set<string>();
+  const visibleQuestions = survey?.questions.filter((q) => visibleIds.has(q.id)) ?? [];
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!survey || !token) return;
 
     const nextErrors: Record<string, string | null> = {};
-    survey.questions.forEach((q) => {
+    visibleQuestions.forEach((q) => {
       nextErrors[q.id] = validateAnswer(q, answers[q.id]);
     });
     setErrors(nextErrors);
@@ -75,11 +89,23 @@ export default function SurveyAnswer({ embed = false }: { embed?: boolean }) {
 
     setSubmitting(true);
     try {
-      await surveyApi.submitByToken(token, answers, survey?.requiresPassword ? password : undefined);
+      await surveyApi.submitByToken(
+        token,
+        answers,
+        survey?.requiresPassword ? password : undefined,
+        getBrowserId()
+      );
+      markSurveySubmitted(token);
       setStage('success');
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : '提交失败');
-      setStage('error');
+      const msg = err instanceof Error ? err.message : '提交失败';
+      if (msg.includes('已经提交') || msg.includes('duplicate')) {
+        markSurveySubmitted(token);
+        setStage('already');
+      } else {
+        setErrorMsg(msg);
+        setStage('error');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -89,6 +115,20 @@ export default function SurveyAnswer({ embed = false }: { embed?: boolean }) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <div className="text-slate-400">加载中...</div>
+      </div>
+    );
+  }
+
+  if (stage === 'already') {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+        <div className="card p-8 text-center max-w-md">
+          <div className="w-16 h-16 mx-auto rounded-2xl bg-amber-50 flex items-center justify-center mb-4">
+            <ShieldAlert className="w-8 h-8 text-amber-500" />
+          </div>
+          <h2 className="font-serif font-semibold text-xl text-slate-800 mb-2">您已提交过该问卷</h2>
+          <p className="text-slate-500">同一浏览器只能提交一次答卷。如需重新作答，请使用其他浏览器或设备。</p>
+        </div>
       </div>
     );
   }
@@ -146,10 +186,6 @@ export default function SurveyAnswer({ embed = false }: { embed?: boolean }) {
       </div>
     );
   }
-
-  const allLogic = survey?.questions.flatMap((q) => q.logic ?? []) ?? [];
-  const visibleIds = survey ? evaluateLogic(allLogic, answers, survey.questions) : new Set<string>();
-  const visibleQuestions = survey?.questions.filter((q) => visibleIds.has(q.id)) ?? [];
 
   const wrap = embed ? (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-white py-8 px-4">

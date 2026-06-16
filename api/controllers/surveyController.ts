@@ -117,13 +117,15 @@ export async function submitResponse(req: Request, res: Response): Promise<void>
     }
   }
   const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+  const browserId: string = req.body.browserId ?? '';
   const result = await responseService.submitResponse(
     survey.id,
     req.body.answers ?? {},
-    ip
+    ip,
+    browserId
   );
   if ('error' in result) {
-    res.status(400).json({ error: result.error });
+    res.status(400).json({ error: result.error, duplicate: result.error === '您已经提交过答卷了' });
     return;
   }
   res.status(201).json(result);
@@ -144,9 +146,13 @@ export async function exportResponses(req: Request, res: Response): Promise<void
   const filters = req.query.filters ? (JSON.parse(String(req.query.filters)) as Record<string, string | string[]>) : undefined;
   const responses = await responseService.getResponses(req.params.id, filters);
 
-  const headerRow = ['提交时间', ...survey.questions.map((q) => q.title)];
+  const headerRow = ['提交时间', '浏览器ID', '是否重复', ...survey.questions.map((q) => q.title)];
   const dataRows = responses.map((r) => {
-    const row: (string | number)[] = [r.submittedAt];
+    const row: (string | number)[] = [
+      r.submittedAt,
+      r.browserId ? r.browserId.slice(0, 12) : '',
+      r.isDuplicate ? '是' : '',
+    ];
     survey.questions.forEach((q) => {
       const answer = r.answers[q.id];
       if (answer === undefined || answer === null) {
@@ -180,7 +186,7 @@ export async function exportResponses(req: Request, res: Response): Promise<void
   XLSX.utils.book_append_sheet(wb, ws, '答卷数据');
   const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 
-  const filename = encodeURIComponent(`${survey.title}_答卷数据.xlsx`);
+  const filename = encodeURIComponent(`${survey.title}_答卷数据${filters ? '（已筛选）' : ''}.xlsx`);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filename}`);
   res.send(buffer);

@@ -82,10 +82,15 @@ export const surveyApi = {
     });
   },
 
-  submitByToken(token: string, answers: Record<string, unknown>, providedPassword?: string): Promise<SurveyResponse> {
+  submitByToken(
+    token: string,
+    answers: Record<string, unknown>,
+    providedPassword?: string,
+    browserId?: string
+  ): Promise<SurveyResponse> {
     return request<SurveyResponse>(`/token/${token}/responses`, {
       method: 'POST',
-      body: JSON.stringify({ answers, providedPassword }),
+      body: JSON.stringify({ answers, providedPassword, browserId }),
     });
   },
 

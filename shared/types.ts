@@ -63,6 +63,8 @@ export interface SurveyResponse {
   answers: Record<string, unknown>;
   submittedAt: string;
   respondentIp: string;
+  browserId: string;
+  isDuplicate?: boolean;
 }
 
 export interface SurveyListItem {
@@ -91,6 +93,8 @@ export interface QuestionAnalytics {
   average?: number;
   min?: number;
   max?: number;
+  matrixRows?: MatrixDimension[];
+  matrixCols?: MatrixDimension[];
   matrixData?: Record<string, AnalyticsOption[]>;
 }
 

@@ -5,7 +5,8 @@ import type { SurveyResponse, SurveyAnalytics, QuestionAnalytics, AnalyticsOptio
 export async function submitResponse(
   surveyId: string,
   answers: Record<string, unknown>,
-  respondentIp: string
+  respondentIp: string,
+  browserId: string
 ): Promise<SurveyResponse | { error: string }> {
   const db = await getDb();
   const survey = db.data.surveys.find((s) => s.id === surveyId);
@@ -31,12 +32,20 @@ export async function submitResponse(
     return { error: '答卷数量已达上限' };
   }
 
+  if (browserId) {
+    const existing = db.data.responses.find((r) => r.surveyId === surveyId && r.browserId === browserId);
+    if (existing) {
+      return { error: '您已经提交过答卷了' };
+    }
+  }
+
   const response: SurveyResponse = {
     id: generateId('resp'),
     surveyId,
     answers,
     submittedAt: now.toISOString(),
     respondentIp,
+    browserId,
   };
 
   db.data.responses.push(response);
@@ -58,8 +67,9 @@ export async function getResponses(
         if (!answer) return false;
 
         if (Array.isArray(filterValue)) {
+          if (filterValue.length === 0) return true;
           if (Array.isArray(answer)) {
-            return filterValue.every((fv) => answer.includes(fv));
+            return filterValue.some((fv) => answer.includes(fv));
           }
           return filterValue.includes(String(answer));
         }
@@ -72,7 +82,19 @@ export async function getResponses(
     });
   }
 
-  return responses.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+  const sorted = responses.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+  const seenBrowserIds = new Set<string>();
+  return sorted.map((r) => {
+    let isDuplicate = false;
+    if (r.browserId) {
+      if (seenBrowserIds.has(r.browserId)) {
+        isDuplicate = true;
+      } else {
+        seenBrowserIds.add(r.browserId);
+      }
+    }
+    return { ...r, isDuplicate };
+  });
 }
 
 export async function getAnalytics(surveyId: string): Promise<SurveyAnalytics | undefined> {
@@ -117,9 +139,13 @@ function analyzeQuestion(question: Question, responses: SurveyResponse[]): Quest
     case 'rating':
       analyzeRating(answers, base);
       break;
-    case 'matrix':
-      base.matrixData = analyzeMatrix(question, answers);
+    case 'matrix': {
+      const { data, rows, cols } = analyzeMatrix(question, answers);
+      base.matrixData = data;
+      base.matrixRows = rows;
+      base.matrixCols = cols;
       break;
+    }
   }
 
   return base;
@@ -174,8 +200,8 @@ function analyzeRating(answers: unknown[], base: QuestionAnalytics): void {
 function analyzeMatrix(
   question: Question,
   answers: unknown[]
-): Record<string, AnalyticsOption[]> {
-  const result: Record<string, AnalyticsOption[]> = {};
+): { data: Record<string, AnalyticsOption[]>; rows: Question['rows']; cols: Question['columns'] } {
+  const data: Record<string, AnalyticsOption[]> = {};
   const rows = question.rows ?? [];
   const columns = question.columns ?? [];
 
@@ -184,7 +210,7 @@ function analyzeMatrix(
       .map((a) => (typeof a === 'object' && a ? (a as Record<string, unknown>)[row.id] : undefined))
       .filter((v) => v !== undefined);
 
-    result[row.id] = columns.map((col) => {
+    data[row.id] = columns.map((col) => {
       const count = rowAnswers.filter((v) => v === col.value).length;
       return {
         label: col.label,
@@ -194,5 +220,5 @@ function analyzeMatrix(
     });
   });
 
-  return result;
+  return { data, rows, cols: columns };
 }

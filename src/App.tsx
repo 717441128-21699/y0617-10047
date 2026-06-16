@@ -3,7 +3,7 @@ import Home from '@/pages/Home';
 import Layout from '@/components/Layout';
 import SurveyEditor from '@/pages/SurveyEditor';
 import SurveySettings from '@/pages/SurveySettings';
-import SurveyAnalytics from '@/pages/SurveyAnalytics';
+import SurveyAnalyticsPage from '@/pages/SurveyAnalytics';
 import SurveyResponses from '@/pages/SurveyResponses';
 import SurveyShare from '@/pages/SurveyShare';
 import SurveyAnswer from '@/pages/SurveyAnswer';
@@ -18,7 +18,7 @@ export default function App() {
           <Route index element={<SurveyEditor />} />
           <Route path="edit" element={<SurveyEditor />} />
           <Route path="settings" element={<SurveySettings />} />
-          <Route path="analytics" element={<SurveyAnalytics />} />
+          <Route path="analytics" element={<SurveyAnalyticsPage />} />
           <Route path="responses" element={<SurveyResponses />} />
           <Route path="share" element={<SurveyShare />} />
         </Route>
